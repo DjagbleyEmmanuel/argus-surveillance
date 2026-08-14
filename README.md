@@ -6,6 +6,16 @@ Completely renamed/rebranded so it never collides with the installed Python
 build (`sentinel-surveillance`): binary `argus`, window "Argus Tactical Vision
 Suite", settings at `~/.config/argus/settings.json`, own icon.
 
+![Argus main window](screenshots/argus-main.png)
+
+Install the ready-made `.deb` from
+[Releases](https://github.com/DjagbleyEmmanuel/argus-surveillance/releases):
+
+```bash
+sudo dpkg -i argus-1.3.0-Linux.deb
+argus
+```
+
 ## Class map (Python → C++)
 
 | Python | C++ (this repo) | Thread | Notes |
