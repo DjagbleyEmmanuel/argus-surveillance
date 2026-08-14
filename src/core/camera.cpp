@@ -1,4 +1,5 @@
 #include "core/camera.h"
+#include "core/v4l2_ctl.h"
 
 #include <QFileInfo>
 #include <QDir>
@@ -100,6 +101,9 @@ bool CameraSource::open() {
                                        : std::make_pair(frame.cols, frame.rows);
         status_ = CameraStatus::ONLINE;
         last_frame_time_ = std::chrono::steady_clock::now().time_since_epoch().count() / 1e9;
+        // Probe night-control capability + re-apply saved pref on startup /
+        // every reconnect (covers both open() and reconnect()).
+        if (type_ == CameraType::USB) refreshDynamicFramerate(true);
         return true;
     } catch (const std::exception& e) {
         status_ = CameraStatus::ERROR;
@@ -121,7 +125,10 @@ bool CameraSource::reconnect() {
             cap_->open(source_url_);
         }
         bool ok = cap_->isOpened();
-        if (ok) status_ = CameraStatus::ONLINE;
+        if (ok) {
+            status_ = CameraStatus::ONLINE;
+            if (type_ == CameraType::USB) refreshDynamicFramerate(true);
+        }
         return ok;
     } catch (...) {
         return false;
@@ -263,6 +270,47 @@ bool CameraSource::setPixelFormat(const std::string& pixel_format) {
     std::string code = fourccOf(pixel_format);
     if (code.size() != 4) return true;
     return cap_->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc(code[0], code[1], code[2], code[3]));
+}
+
+// ---------------------------------------------------------------------------
+// exposure_dynamic_framerate (per-camera night frame-rate control)
+// ---------------------------------------------------------------------------
+std::string CameraSource::devicePath() const {
+    if (type_ != CameraType::USB) return "";
+    try {
+        return "/dev/video" + std::to_string(std::stoi(source_url_));
+    } catch (...) {
+        return "";
+    }
+}
+
+void CameraSource::refreshDynamicFramerate(bool apply_pref) {
+    const std::string dev = devicePath();
+    edf_supported_ = false;
+    edf_value_ = -1;
+    if (dev.empty()) return;
+    if (!v4l2ctl::controlSupported(dev, v4l2ctl::kExposureDynamicFramerate)) return;
+    edf_supported_ = true;
+    auto val = v4l2ctl::getControl(dev, v4l2ctl::kExposureDynamicFramerate);
+    edf_value_ = val ? *val : -1;
+    if (apply_pref && edf_pref_.load() >= 0) {
+        const int want = edf_pref_.load();
+        if (edf_value_ != want &&
+            v4l2ctl::setControl(dev, v4l2ctl::kExposureDynamicFramerate, want) == 0) {
+            edf_value_ = want;
+        }
+    }
+}
+
+int CameraSource::setDynamicFramerate(int value) {
+    const std::string dev = devicePath();
+    if (dev.empty()) return -1;
+    const int rc = v4l2ctl::setControl(dev, v4l2ctl::kExposureDynamicFramerate, value);
+    if (rc == 0) {
+        edf_value_ = value;
+        edf_pref_ = value;
+    }
+    return rc;
 }
 
 bool CameraSource::isOnline() const {

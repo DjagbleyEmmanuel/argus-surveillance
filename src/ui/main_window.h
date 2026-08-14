@@ -76,6 +76,7 @@ private:
     void refreshStatus();
     void createWidget(const QString& cid, const core::CameraConfig& cfg = {});
     void applyLightingTo(CameraWidget* w);
+    void applyClaheToAll();
     void detachCamera(CameraWidget* widget);
     void reattachCamera(CameraWidget* widget);
     void toggleSpotlight(CameraWidget* widget);
@@ -128,6 +129,13 @@ private:
     int light_contrast_val_ = 100;
     int light_saturation_val_ = 100;
     int light_warmth_val_ = 0;
+
+    // Task 2 CLAHE night-vision tuning
+    QSlider* clahe_clip_slider_ = nullptr;
+    QSlider* clahe_tile_slider_ = nullptr;
+    QCheckBox* clahe_denoise_cb_ = nullptr;
+    QCheckBox* clahe_gamma_cb_ = nullptr;
+    QCheckBox* clahe_desat_cb_ = nullptr;
 
     // recording / performance
     QPushButton* global_pause_btn_ = nullptr;

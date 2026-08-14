@@ -1,6 +1,8 @@
 #include "core/detection_worker.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace core {
 
@@ -280,19 +282,75 @@ cv::Mat DetectionWorker::nightEnhance(const cv::Mat& frame) {
     if (!night) return frame;
 
     try {
-        if (clahe_.empty()) clahe_ = cv::createCLAHE(3.5, {8, 8});
         cv::Mat out = frame.clone();  // never mutate the shared capture buffer
+
+        // 1) pre-CLAHE denoise — CLAHE amplifies sensor noise in the dark, so
+        //    a median filter first is the single biggest quality win.
+        cv::Mat work = out;
+        if (clahe_denoise_.load()) cv::medianBlur(out, work, 3);
+
+        // 2) CLAHE on the LAB luma channel (preserves color).
         cv::Mat lab;
-        cv::cvtColor(out, lab, cv::COLOR_BGR2Lab);
+        cv::cvtColor(work, lab, cv::COLOR_BGR2Lab);
         std::vector<cv::Mat> planes;
         cv::split(lab, planes);
+        // Pre-CLAHE luma mean: the gamma and desat thresholds must read the
+        // un-enhanced luma (mirrors core/detection_worker.py exactly).
+        const double luma_mean = cv::mean(planes[0])[0];
+        const int tile = std::max(2, clahe_tile_.load());
+        const double clip = std::max(0.5, clahe_clip_.load());
+        if (clahe_.empty() || clahe_dirty_.exchange(false))
+            clahe_ = cv::createCLAHE(clip, {tile, tile});
         clahe_->apply(planes[0], planes[0]);
+
+        // 3) reactive gamma on the CLAHE'd luma, EMA-smoothed so auto-exposure
+        //    bouncing never flickers frame-to-frame.
+        if (clahe_gamma_.load()) {
+            double g = std::min(1.8, std::max(0.35, 110.0 / std::max(luma_mean, 1.0)));
+            gamma_smooth_ = gamma_smooth_ * 0.7 + g * 0.3;
+            g = gamma_smooth_;
+            uchar lut[256];
+            for (int i = 0; i < 256; ++i)
+                lut[i] = cv::saturate_cast<uchar>(
+                    std::min(255.0, std::pow(i / 255.0, 1.0 / g) * 255.0));
+            cv::LUT(planes[0], cv::Mat(1, 256, CV_8UC1, lut).clone(), planes[0]);
+        } else {
+            gamma_smooth_ = 1.0;
+        }
+
         cv::merge(planes, lab);
-        cv::cvtColor(lab, out, cv::COLOR_Lab2BGR);
-        return out;
+        cv::Mat out2;
+        cv::cvtColor(lab, out2, cv::COLOR_Lab2BGR);
+
+        // 4) auto-desaturate in very low light — chroma noise reads much
+        //    cleaner when nearly black; saturation scales with ambient luma.
+        if (clahe_desat_.load() && luma_mean < 30.0) {
+            const double s_factor = std::max(0.25, luma_mean / 30.0);
+            cv::Mat hsv;
+            cv::cvtColor(out2, hsv, cv::COLOR_BGR2HSV);
+            std::vector<cv::Mat> hsv_planes;
+            cv::split(hsv, hsv_planes);
+            cv::Mat s32;
+            hsv_planes[1].convertTo(s32, CV_32F);
+            s32 = cv::min(s32 * s_factor, 255.0);
+            s32.convertTo(hsv_planes[1], CV_8U);
+            cv::merge(hsv_planes, hsv);
+            cv::cvtColor(hsv, out2, cv::COLOR_HSV2BGR);
+        }
+        return out2;
     } catch (...) {
         return frame;
     }
+}
+
+void DetectionWorker::updateClahe(double clip, int tile, bool denoise,
+                                  bool gamma, bool desat) {
+    clahe_clip_.store(clip);
+    clahe_tile_.store(tile);
+    clahe_denoise_.store(denoise);
+    clahe_gamma_.store(gamma);
+    clahe_desat_.store(desat);
+    clahe_dirty_.store(true);
 }
 
 std::optional<DetectionResult> DetectionWorker::getResult() {

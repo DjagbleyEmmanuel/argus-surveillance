@@ -4,9 +4,11 @@
 #include <QDir>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -372,6 +374,7 @@ public:
     QPushButton* spotlight_btn = nullptr;
     QPushButton* settings_btn = nullptr;
     QPushButton* remove_btn = nullptr;
+    QPushButton* edf_btn = nullptr;
 };
 
 CameraWidget::CameraWidget(std::shared_ptr<core::CameraSource> camera, QWidget* parent)
@@ -379,6 +382,15 @@ CameraWidget::CameraWidget(std::shared_ptr<core::CameraSource> camera, QWidget* 
     setMinimumSize(320, 220);
     setObjectName("cameraWidget");
     buildUi();
+
+    // Periodic mirror of the real on-device control (never a cached guess).
+    // Also re-probes support on unsupported models so a hotplugged camera that
+    // now exposes the control picks it up.
+    edf_timer_ = new QTimer(this);
+    edf_timer_->setInterval(4000);
+    connect(edf_timer_, &QTimer::timeout, this, &CameraWidget::refreshDynamicFramerate);
+    edf_timer_->start();
+    QTimer::singleShot(0, this, &CameraWidget::refreshDynamicFramerate);
 }
 
 void CameraWidget::buildUi() {
@@ -451,6 +463,14 @@ void CameraWidget::buildHeader() {
     add_tool(header_->popout_btn, "⧉", "Detach stream to Multi-Monitor Window", "#38bdf8", "#7dd3fc");
     add_tool(header_->spotlight_btn, "⛶", "Full Application Screen (Spotlight)", "#38bdf8", "#7dd3fc");
     add_tool(header_->settings_btn, "⚙", "Resolution/FPS Settings", "#94a3b8", "#cbd5e1");
+    // exposure_dynamic_framerate: per-camera night control. Hidden unless the
+    // device actually exposes it (runtime-probed, never assumed). Value is
+    // mirrored from the device on an interval.
+    add_tool(header_->edf_btn, "DR", "Toggle dynamic framerate (exposure_dynamic_framerate)", "#34d399", "#6ee7b7");
+    header_->edf_btn->setCheckable(true);
+    header_->edf_btn->setVisible(false);
+    connect(header_->edf_btn, &QPushButton::toggled, this,
+            &CameraWidget::onDynamicFramerateToggled);
     add_tool(header_->remove_btn, "✕", "Remove camera module", "#f43f5e", "#fda4af");
 
     connect(header_->snap_btn, &QPushButton::clicked, this, [this] { canvas_->takeSnapshot(); });
@@ -571,6 +591,46 @@ void CameraWidget::buildFooter() {
 void CameraWidget::toggleSettingsPanel() {
     settings_open_ = !settings_open_;
     settings_panel_->setFixedHeight(settings_open_ ? 28 : 0);
+}
+
+void CameraWidget::refreshDynamicFramerate() {
+    if (!camera_->edfSupported()) {
+        // Hotplug re-detect: an unsupported model may gain the control.
+        camera_->refreshDynamicFramerate(false);
+        if (!camera_->edfSupported()) return;
+    }
+    const int val = camera_->edfValue();
+    if (val < 0) return;
+    edf_supported_ = true;
+    edf_value_ = val;
+    header_->edf_btn->setVisible(true);
+    QSignalBlocker blocker(header_->edf_btn);
+    header_->edf_btn->setChecked(val == 1);
+    header_->edf_btn->setText(val == 1 ? "DR●" : "DR");
+}
+
+void CameraWidget::onDynamicFramerateToggled(bool checked) {
+    const int want = checked ? 1 : 0;
+    const int rc = camera_->setDynamicFramerate(want);
+    header_->edf_btn->setText(checked ? "DR●" : "DR");
+    if (rc == 0) {
+        edf_value_ = want;
+        emit dynamicFramerateToggled(want);
+        return;
+    }
+    // Never fail silently: revert the button and explain why.
+    QSignalBlocker blocker(header_->edf_btn);
+    header_->edf_btn->setChecked(!checked);
+    header_->edf_btn->setText(!checked ? "DR●" : "DR");
+    QString why;
+    switch (rc) {
+        case 1: why = QStringLiteral("the device is busy — try again"); break;
+        case 2: why = QStringLiteral("permission denied on the video device"); break;
+        default: why = QStringLiteral("control not supported on this camera"); break;
+    }
+    QMessageBox::warning(this, QStringLiteral("Dynamic Framerate"),
+        QStringLiteral("Could not set exposure_dynamic_framerate=%1 on %2.\n%3")
+            .arg(want).arg(QString::fromStdString(camera_->name())).arg(why));
 }
 
 void CameraWidget::resizeEvent(QResizeEvent* event) {

@@ -21,6 +21,7 @@ struct CameraConfig {
     double fps = 0.0;
     std::string usb_sys_name;
     std::string usb_bus_path;
+    int edf_value = -1;       // exposure_dynamic_framerate pref (0/1, -1=none)
 };
 
 struct Settings {
@@ -51,6 +52,13 @@ struct Settings {
     int contrast = 100;
     int saturation = 100;
     int warmth = 0;
+
+    // Task 2 CLAHE night-vision tuning
+    double clahe_clip = 3.5;
+    int clahe_tile = 8;
+    bool clahe_denoise = true;
+    bool clahe_gamma = true;
+    bool clahe_desat = true;
 
     std::vector<CameraConfig> cameras;
 };

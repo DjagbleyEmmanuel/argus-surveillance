@@ -73,6 +73,7 @@ signals:
     void resolutionChanged(int width, int height);
     void fpsChanged(int fps);
     void pixelFormatChanged(const QString& fmt);
+    void dynamicFramerateToggled(int value);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -83,6 +84,8 @@ private:
     void buildSettingsPanel();
     void buildFooter();
     void toggleSettingsPanel();
+    void refreshDynamicFramerate();
+    void onDynamicFramerateToggled(bool checked);
 
     std::shared_ptr<core::CameraSource> camera_;
     std::shared_ptr<core::DetectionWorker> worker_;
@@ -98,6 +101,11 @@ private:
     QComboBox* fmt_combo_ = nullptr;
     QLabel* fmt_label_ = nullptr;
     QLabel* footer_fps_ = nullptr;
+
+    // exposure_dynamic_framerate toggle state
+    bool edf_supported_ = false;
+    int edf_value_ = -1;
+    QTimer* edf_timer_ = nullptr;
 
     bool settings_open_ = false;
     bool recording_ = false;

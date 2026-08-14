@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(argus VERSION 1.3.0 LANGUAGES CXX)
+project(argus VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,7 @@ qt_add_executable(argus
   src/main.cpp
   src/resources.qrc
   src/core/camera.cpp
+  src/core/v4l2_ctl.cpp
   src/core/detector.cpp
   src/core/object_detector.cpp
   src/core/face_recognizer.cpp

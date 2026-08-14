@@ -93,6 +93,21 @@ public:
     const std::string& usbSysName() const { return usb_sys_name_; }
     const std::string& usbBusPath() const { return usb_bus_path_; }
 
+    // ---- exposure_dynamic_framerate (per-camera night frame-rate control) ----
+    // Capability is probed at runtime per model (never assumed to exist) and
+    // the value is always read from the device, never a cached guess.
+    std::string devicePath() const;               // "/dev/videoN" or ""
+    bool edfSupported() const { return edf_supported_.load(); }
+    int edfValue() const { return edf_value_.load(); }  // -1 if unknown
+    // Apply the control now; returns 0=ok, -1=unsupported/error, 1=busy,
+    // 2=permission denied. Remembered as the persisted preference.
+    int setDynamicFramerate(int value);
+    // Persisted preference (0/1, -1 = none); re-applied on every open/reconnect.
+    void setDynamicFrameratePref(int value) { edf_pref_.store(value); }
+    int dynamicFrameratePref() const { return edf_pref_.load(); }
+    // Query device support + real value; optionally re-apply the pref.
+    void refreshDynamicFramerate(bool apply_pref);
+
     // ---- static discovery / identity (thread-safe, sequential probing) ----
     static std::vector<int> usbCaptureIndices();
     static UsbIdentity getUsbIdentity(int idx);
@@ -118,6 +133,11 @@ private:
     // identity (filled at open time for USB)
     std::string usb_sys_name_;
     std::string usb_bus_path_;
+
+    // exposure_dynamic_framerate state (thread-safe; -1 = none/unknown)
+    std::atomic<bool> edf_supported_{false};
+    std::atomic<int> edf_value_{-1};
+    std::atomic<int> edf_pref_{-1};
 
     std::unique_ptr<cv::VideoCapture> cap_;
     mutable std::mutex cap_mutex_;

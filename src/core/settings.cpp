@@ -55,6 +55,13 @@ Settings SettingsStore::load() {
     s.saturation = lighting.value("saturation").toInt(s.saturation);
     s.warmth = lighting.value("warmth").toInt(s.warmth);
 
+    QJsonObject clahe = root.value("clahe").toObject();
+    s.clahe_clip = clahe.value("clip").toDouble(s.clahe_clip);
+    s.clahe_tile = clahe.value("tile").toInt(s.clahe_tile);
+    s.clahe_denoise = clahe.value("denoise").toBool(s.clahe_denoise);
+    s.clahe_gamma = clahe.value("gamma").toBool(s.clahe_gamma);
+    s.clahe_desat = clahe.value("desat").toBool(s.clahe_desat);
+
     for (const auto& v : root.value("cameras").toArray()) {
         QJsonObject c = v.toObject();
         CameraConfig cfg;
@@ -72,6 +79,7 @@ Settings SettingsStore::load() {
         cfg.fps = c.value("fps").toDouble();
         cfg.usb_sys_name = c.value("usb_sys_name").toString().toStdString();
         cfg.usb_bus_path = c.value("usb_bus_path").toString().toStdString();
+        cfg.edf_value = c.value("edf_value").toInt(-1);
         s.cameras.push_back(std::move(cfg));
     }
     return s;
@@ -115,6 +123,14 @@ void SettingsStore::save(const Settings& s) {
     lighting.insert("warmth", s.warmth);
     root.insert("lighting", lighting);
 
+    QJsonObject clahe;
+    clahe.insert("clip", s.clahe_clip);
+    clahe.insert("tile", s.clahe_tile);
+    clahe.insert("denoise", s.clahe_denoise);
+    clahe.insert("gamma", s.clahe_gamma);
+    clahe.insert("desat", s.clahe_desat);
+    root.insert("clahe", clahe);
+
     QJsonArray cameras;
     for (const auto& c : s.cameras) {
         QJsonObject co;
@@ -129,6 +145,7 @@ void SettingsStore::save(const Settings& s) {
         co.insert("fps", c.fps);
         co.insert("usb_sys_name", QString::fromStdString(c.usb_sys_name));
         co.insert("usb_bus_path", QString::fromStdString(c.usb_bus_path));
+        co.insert("edf_value", c.edf_value);
         cameras.append(co);
     }
     root.insert("cameras", cameras);

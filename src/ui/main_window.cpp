@@ -400,6 +400,58 @@ QWidget* MainWindow::buildControlPanel() {
     add_light_row("Warmth:", light_warmth_, -100, 100, 0);
     l->addWidget(light_grp);
 
+    // --- Night Vision CLAHE (Task 2) ---
+    auto* clahe_grp = new QGroupBox("🌙 Night Vision CLAHE");
+    auto* clh = new QVBoxLayout(clahe_grp);
+    clh->setSpacing(6);
+
+    auto add_clahe_row = [&](const QString& label, QSlider*& slider,
+                             QLabel*& val_lbl, int lo, int hi, int val,
+                             const QString& suffix) {
+        auto* row = new QHBoxLayout;
+        row->addWidget(new QLabel(label));
+        slider = new QSlider(Qt::Horizontal);
+        slider->setRange(lo, hi);
+        slider->setValue(val);
+        val_lbl = new QLabel(QString("%1%2").arg(val).arg(suffix));
+        val_lbl->setStyleSheet("font-size: 11px; min-width: 40px;");
+        row->addWidget(slider);
+        row->addWidget(val_lbl);
+        clh->addLayout(row);
+    };
+    QLabel* clip_val = nullptr;
+    add_clahe_row("CLAHE Clip:", clahe_clip_slider_, clip_val, 10, 80, 35, " (3.5)");
+    connect(clahe_clip_slider_, &QSlider::valueChanged, this,
+            [this, clip_val](int v) {
+                clip_val->setText(QString("%1 (%2)").arg(v).arg(v / 10.0, 0, 'f', 1));
+                applyClaheToAll();
+                saveSettings();
+            });
+    QLabel* tile_val = nullptr;
+    add_clahe_row("Tile Size:", clahe_tile_slider_, tile_val, 2, 16, 8, "");
+    connect(clahe_tile_slider_, &QSlider::valueChanged, this,
+            [this, tile_val](int v) {
+                tile_val->setText(QString::number(v));
+                applyClaheToAll();
+                saveSettings();
+            });
+
+    auto add_clahe_cb = [&](const QString& label, QCheckBox*& cb, bool checked) {
+        cb = new QCheckBox(label);
+        cb->setChecked(checked);
+        clh->addWidget(cb);
+    };
+    add_clahe_cb("Pre-CLAHE Denoise", clahe_denoise_cb_, true);
+    add_clahe_cb("Reactive Gamma Lift", clahe_gamma_cb_, true);
+    add_clahe_cb("Auto-Desaturate in Low Light", clahe_desat_cb_, true);
+    for (auto* cb : {clahe_denoise_cb_, clahe_gamma_cb_, clahe_desat_cb_}) {
+        connect(cb, &QCheckBox::toggled, this, [this](bool) {
+            applyClaheToAll();
+            saveSettings();
+        });
+    }
+    l->addWidget(clahe_grp);
+
     // --- Master Recording Controls ---
     auto* rec_grp = new QGroupBox("Master Recording Controls");
     auto* rc = new QVBoxLayout(rec_grp);
@@ -626,6 +678,8 @@ void MainWindow::addCamera(const core::CameraConfig& cfg, bool silent) {
     QString cid = QString::fromStdString(cid_str);
 
     auto camera = std::make_shared<core::CameraSource>(cfg.name, type, cfg.url, cid_str, cfg.pixel_format);
+    // Restore per-camera night-control pref BEFORE open so it is re-applied.
+    camera->setDynamicFrameratePref(cfg.edf_value);
     if (!camera->open()) {
         if (!silent)
             QMessageBox::warning(this, "Connection Error",
@@ -649,6 +703,7 @@ void MainWindow::addCamera(const core::CameraConfig& cfg, bool silent) {
                            record_cb_->isChecked(), sens_slider_->value());
     worker->start();
     workers_.insert(cid, worker);
+    applyClaheToAll();
 
     createWidget(cid, cfg);
 
@@ -695,6 +750,9 @@ void MainWindow::createWidget(const QString& cid, const core::CameraConfig& cfg)
     });
     connect(widget, &CameraWidget::pixelFormatChanged, this, [this, cid](const QString& fmt) {
         if (auto cam = cameras_.value(cid)) cam->setPixelFormat(fmt.toStdString());
+        saveSettings();
+    });
+    connect(widget, &CameraWidget::dynamicFramerateToggled, this, [this](int) {
         saveSettings();
     });
 
@@ -1012,6 +1070,16 @@ void MainWindow::applyLightingTo(CameraWidget* w) {
                    light_saturation_val_, light_warmth_val_);
 }
 
+void MainWindow::applyClaheToAll() {
+    const double clip = clahe_clip_slider_->value() / 10.0;
+    const int tile = clahe_tile_slider_->value();
+    const bool denoise = clahe_denoise_cb_->isChecked();
+    const bool gamma = clahe_gamma_cb_->isChecked();
+    const bool desat = clahe_desat_cb_->isChecked();
+    for (auto& [cid, w] : workers_.toStdMap())
+        w->updateClahe(clip, tile, denoise, gamma, desat);
+}
+
 void MainWindow::onLightingChange(int) {
     light_brightness_val_ = light_brightness_->value();
     light_contrast_val_ = light_contrast_->value();
@@ -1075,6 +1143,14 @@ void MainWindow::loadSavedSettings() {
     light_warmth_->setValue(s.warmth);
     onLightingChange(0);
     onLightModeChanged(0);
+
+    // CLAHE night-vision tuning (mirrors core/settings.py "clahe")
+    clahe_clip_slider_->setValue(static_cast<int>(std::round(s.clahe_clip * 10)));
+    clahe_tile_slider_->setValue(s.clahe_tile);
+    clahe_denoise_cb_->setChecked(s.clahe_denoise);
+    clahe_gamma_cb_->setChecked(s.clahe_gamma);
+    clahe_desat_cb_->setChecked(s.clahe_desat);
+    applyClaheToAll();
     refreshYoloLabel();
 
     // GPU label
@@ -1134,6 +1210,12 @@ void MainWindow::saveSettings() {
     s.saturation = light_saturation_val_;
     s.warmth = light_warmth_val_;
 
+    s.clahe_clip = clahe_clip_slider_->value() / 10.0;
+    s.clahe_tile = clahe_tile_slider_->value();
+    s.clahe_denoise = clahe_denoise_cb_->isChecked();
+    s.clahe_gamma = clahe_gamma_cb_->isChecked();
+    s.clahe_desat = clahe_desat_cb_->isChecked();
+
     s.poll_rate = polls_per_sec_;
     s.grid_index = grid_combo_->currentIndex();
 
@@ -1150,6 +1232,7 @@ void MainWindow::saveSettings() {
         c.fps = cam->fps();
         c.usb_sys_name = cam->usbSysName();
         c.usb_bus_path = cam->usbBusPath();
+        c.edf_value = cam->dynamicFrameratePref();
         s.cameras.push_back(std::move(c));
     }
 

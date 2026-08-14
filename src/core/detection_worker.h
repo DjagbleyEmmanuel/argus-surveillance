@@ -64,6 +64,9 @@ public:
     void updateNightVision(bool night_vision, const std::string& light_mode);
     bool nightVisionActive() const { return light_mode_.load() != 1 && (light_mode_.load() == 2 || night_vision_.load() || (light_mode_.load() == 0 && auto_night_.load())); }
 
+    // CLAHE tunables (GUI sliders/checkboxes; applied on the worker thread).
+    void updateClahe(double clip, int tile, bool denoise, bool gamma, bool desat);
+
     // ---- recording control (thread-safe) ----
     void stopRecording();
     void togglePause();
@@ -100,7 +103,15 @@ private:
     std::atomic<int> light_mode_{0};
     std::atomic<bool> night_vision_{false};
     std::atomic<bool> auto_night_{false};
-    cv::Ptr<cv::CLAHE> clahe_;
+    // Task 2 CLAHE tuning (written by GUI, read by the main-loop thread)
+    std::atomic<double> clahe_clip_{3.5};
+    std::atomic<int> clahe_tile_{8};
+    std::atomic<bool> clahe_denoise_{true};
+    std::atomic<bool> clahe_gamma_{true};
+    std::atomic<bool> clahe_desat_{true};
+    std::atomic<bool> clahe_dirty_{true};
+    cv::Ptr<cv::CLAHE> clahe_;  // main-loop thread only
+    double gamma_smooth_ = 1.0;  // main-loop thread only
 
     // results ring (max 2)
     std::mutex result_mutex_;
