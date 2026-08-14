@@ -1,0 +1,143 @@
+#pragma once
+
+#include <opencv2/opencv.hpp>
+
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace core {
+
+enum class CameraType { USB, RTSP, HTTP };
+enum class CameraStatus { UNKNOWN, CONNECTING, ONLINE, OFFLINE, ERROR };
+
+// Selectable V4L2 capture output formats for USB cameras.
+// Map "UI label" -> FourCC code ("" => auto/default).
+inline const std::vector<std::pair<std::string, std::string>>& PixelFormats() {
+    static const std::vector<std::pair<std::string, std::string>> fmts = {
+        {"Auto (Default)", ""},
+        {"Motion-JPEG (MPJG)", "MJPG"},
+        {"YUYV 4:2:2 (YUYV)", "YUYV"},
+        {"RGB3", "RGB3"},
+        {"BGR3", "BGR3"},
+        {"NV12", "NV12"},
+        {"I420 (YU12)", "I420"},
+        {"Grayscale (GREY)", "GREY"},
+    };
+    return fmts;
+}
+
+// Stable per-physical-device identity (survives /dev/videoN index changes).
+struct UsbIdentity {
+    int index = -1;
+    std::string sys_name;
+    std::string bus_path;  // basename under /dev/v4l/by-path
+};
+
+struct UsbCamera {
+    int index = -1;
+    std::string label;  // e.g. "Integrated_Webcam_HD (video4)"
+};
+
+// std::thread-based capture pump. Owns the cv::VideoCapture handle and pushes
+// the latest frame onto a tiny ring; readers use readLatest() which drains it.
+//
+// Port notes vs. Python:
+//  - Two-step open: create VideoCapture, set CAP_PROP_OPEN_TIMEOUT_MSEC and
+//    CAP_PROP_READ_TIMEOUT_MSEC BEFORE open() so dead nodes fail fast.
+//  - Reconnect with exponential backoff (2s -> 30s), like the Python loop.
+//  - Sequential v4l2-ctl child-probe in detectUsbCameras(); never from the GUI.
+class CameraSource {
+public:
+    CameraSource(std::string name, CameraType type, std::string url,
+                 std::string camera_id = "", std::string pixel_format = "");
+    ~CameraSource();
+
+    CameraSource(const CameraSource&) = delete;
+    CameraSource& operator=(const CameraSource&) = delete;
+
+    bool open();          // two-step open w/ timeouts + pixel-format + verify read
+    void start();         // spawn capture thread
+    void stop();          // signal + join + release
+
+    // Drains the latest frame (drops older ones). Returns false if none fresh.
+    bool readLatest(cv::Mat& out);
+
+    bool setResolution(int width, int height);
+    bool setFps(double fps);
+    bool setPixelFormat(const std::string& pixel_format);  // re-applies FOURCC
+
+    // Candidate resolutions for the widget's Res combo (current first).
+    std::vector<std::pair<int, int>> enumerateResolutions() const;
+
+    // ---- introspection ----
+    bool isOnline() const;   // ONLINE and frame received < 5s ago
+    CameraStatus status() const { return status_.load(); }
+    std::string statusString() const;
+    double fps() const { return fps_.load(); }
+    std::pair<int, int> resolution() const { return resolution_; }
+    double uptime() const;
+
+    // ---- accessors ----
+    const std::string& name() const { return name_; }
+    const std::string& cameraId() const { return camera_id_; }
+    const std::string& sourceUrl() const { return source_url_; }
+    CameraType sourceType() const { return type_; }
+    const std::string& pixelFormat() const { return pixel_format_; }
+    const std::string& usbSysName() const { return usb_sys_name_; }
+    const std::string& usbBusPath() const { return usb_bus_path_; }
+
+    // ---- static discovery / identity (thread-safe, sequential probing) ----
+    static std::vector<int> usbCaptureIndices();
+    static UsbIdentity getUsbIdentity(int idx);
+    // Find the CURRENT index for a saved identity (bus path first, then name).
+    static int resolveUsbIndex(const std::string& bus_path,
+                               const std::string& sys_name, int fallback);
+    // Sequential v4l2-ctl --stream probe. Call from a worker thread.
+    static std::vector<UsbCamera> detectUsbCameras();
+
+    // Returns None-equivalent when url is not USB/RTSP/HTTP.
+    static std::optional<CameraType> detectType(const std::string& source_url);
+
+private:
+    void captureLoop();
+    bool reconnect();
+
+    std::string name_;
+    CameraType type_;
+    std::string source_url_;
+    std::string camera_id_;
+    std::string pixel_format_;
+
+    // identity (filled at open time for USB)
+    std::string usb_sys_name_;
+    std::string usb_bus_path_;
+
+    std::unique_ptr<cv::VideoCapture> cap_;
+    mutable std::mutex cap_mutex_;
+
+    std::atomic<CameraStatus> status_{CameraStatus::UNKNOWN};
+    std::atomic<double> fps_{0.0};
+    std::pair<int, int> resolution_{0, 0};
+    std::atomic<double> last_frame_time_{0.0};
+    double reconnect_delay_ = 2.0;
+
+    std::atomic<bool> running_{false};
+    std::atomic<bool> stop_event_{false};
+    std::thread thread_;
+
+    // latest-frame ring (max ~2), guarded
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<cv::Mat> frame_queue_;
+    int frame_count_ = 0;
+    double fps_start_time_ = 0.0;
+};
+
+}  // namespace core

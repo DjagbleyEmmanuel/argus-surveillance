@@ -1,0 +1,10 @@
+Argus Tactical Vision Suite
+
+Multi-camera surveillance and recording application.
+
+Features:
+  - Live multi-camera monitoring with smooth pan/zoom and digital night vision
+  - Motion, human (HOG + Haar), face, and YOLOv4-tiny object detection
+  - Recording and playback, snapshot capture, and spotlight/pop-out views
+
+Bundled with YOLOv4-tiny (80 COCO classes) for CPU-friendly object detection.

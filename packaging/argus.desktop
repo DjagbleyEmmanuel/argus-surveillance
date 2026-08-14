@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Argus Tactical Vision Suite
+Comment=Multi-camera surveillance suite with YOLOv4-tiny object detection
+Exec=argus
+Icon=argus
+Categories=Utility;Security;Video;
+Terminal=false
+StartupWMClass=argus
