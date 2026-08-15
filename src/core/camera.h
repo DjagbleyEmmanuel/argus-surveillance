@@ -5,9 +5,11 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -72,6 +74,17 @@ public:
     bool setResolution(int width, int height);
     bool setFps(double fps);
     bool setPixelFormat(const std::string& pixel_format);  // re-applies FOURCC
+
+    // --- Non-blocking reconfigure API -----------------------------------
+    // setResolution/setFps/setPixelFormat above touch the V4L2 device and can
+    // block for seconds (a FOURCC change re-opens the device; a resolution
+    // change renegotiates it). They must never run on the GUI thread, so the
+    // methods below hand the request to the capture-loop thread, which is the
+    // only thread that owns cap_. The GUI stays responsive.
+    void setResolutionAsync(int width, int height);
+    void setFpsAsync(double fps);
+    void requestPixelFormat(const std::string& pixel_format);
+    void applyPending();  // drained by captureLoop()
 
     // Candidate resolutions for the widget's Res combo (current first).
     std::vector<std::pair<int, int>> enumerateResolutions() const;
@@ -141,6 +154,11 @@ private:
 
     std::unique_ptr<cv::VideoCapture> cap_;
     mutable std::mutex cap_mutex_;
+
+    // reconfigure request queue (drained by captureLoop on its own thread)
+    std::mutex cmd_mutex_;
+    std::queue<std::function<void()>> cmd_queue_;
+    bool need_reopen_ = false;  // pixel-format change => device reopen
 
     std::atomic<CameraStatus> status_{CameraStatus::UNKNOWN};
     std::atomic<double> fps_{0.0};

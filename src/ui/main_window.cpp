@@ -7,6 +7,7 @@
 #include "ui/theme.h"
 
 #include <QCheckBox>
+#include <thread>
 #include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
@@ -47,6 +48,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUi();
     detectCameras();
     loadSavedSettings();
+
+    connect(this, &MainWindow::cameraOpened, this, &MainWindow::onCameraOpened);
+    connect(this, &MainWindow::cameraOpenFailed, this, &MainWindow::onCameraOpenFailed);
 }
 
 // ===========================================================================
@@ -680,21 +684,37 @@ void MainWindow::addCamera(const core::CameraConfig& cfg, bool silent) {
     auto camera = std::make_shared<core::CameraSource>(cfg.name, type, cfg.url, cid_str, cfg.pixel_format);
     // Restore per-camera night-control pref BEFORE open so it is re-applied.
     camera->setDynamicFrameratePref(cfg.edf_value);
-    if (!camera->open()) {
-        if (!silent)
-            QMessageBox::warning(this, "Connection Error",
-                QString("Failed to connect to camera stream: '%1'")
-                    .arg(QString::fromStdString(cfg.name)));
-        return;
-    }
+    // Open + start on a background thread. camera->open() (and OpenCV's V4L2
+    // device open with its timeouts/first-frame read) can block for seconds, so
+    // doing it on the GUI thread would freeze the whole app. The worker/widget
+    // are created only once the device is actually online.
+    pending_cameras_.insert(cid, camera);
+    pending_cfgs_.insert(cid, cfg);
+    // Open on a detached worker thread; start() (which spawns the capture
+    // thread) is done on the main thread once the device is confirmed online.
+    std::thread([this, camera, cfg, cid, silent]() {
+        bool ok = camera->open();
+        if (ok)
+            emit cameraOpened(cid, silent);
+        else
+            emit cameraOpenFailed(cid, silent);
+    }).detach();
+    refreshStatus();
+}
+
+void MainWindow::onCameraOpened(QString cid, bool silent) {
+    auto camera = pending_cameras_.take(cid);
+    auto cfg = pending_cfgs_.take(cid);
+    if (!camera || cfg.url.empty()) return;
+
     if (cfg.resolution_w > 0 && cfg.resolution_h > 0)
-        camera->setResolution(cfg.resolution_w, cfg.resolution_h);
+        camera->setResolutionAsync(cfg.resolution_w, cfg.resolution_h);
     if (cfg.fps > 0.0)
-        camera->setFps(cfg.fps);
+        camera->setFpsAsync(cfg.fps);
     camera->start();
     cameras_.insert(cid, camera);
 
-    auto worker = std::make_shared<core::DetectionWorker>(camera, cid_str,
+    auto worker = std::make_shared<core::DetectionWorker>(camera, camera->cameraId(),
                                                           record_cb_->isChecked(),
                                                           face_recognizer_,
                                                           object_detector_);
@@ -719,6 +739,16 @@ void MainWindow::addCamera(const core::CameraConfig& cfg, bool silent) {
     saveSettings();
 }
 
+void MainWindow::onCameraOpenFailed(QString cid, bool silent) {
+    pending_cameras_.remove(cid);
+    pending_cfgs_.remove(cid);
+    refreshStatus();
+    if (!silent) {
+        QMessageBox::warning(this, "Connection Error",
+            QString("Failed to connect to camera stream."));
+    }
+}
+
 void MainWindow::createWidget(const QString& cid, const core::CameraConfig& cfg) {
     auto camera = cameras_.value(cid);
     auto* widget = new CameraWidget(camera);
@@ -741,15 +771,18 @@ void MainWindow::createWidget(const QString& cid, const core::CameraConfig& cfg)
         refreshStatus();
     });
     connect(widget, &CameraWidget::resolutionChanged, this, [this, cid](int w, int h) {
-        if (auto cam = cameras_.value(cid)) cam->setResolution(w, h);
+        // Queue the V4L2 renegotiation to the capture thread so the GUI
+        // stays responsive.
+        if (auto cam = cameras_.value(cid)) cam->setResolutionAsync(w, h);
         saveSettings();
     });
     connect(widget, &CameraWidget::fpsChanged, this, [this, cid](int fps) {
-        if (auto cam = cameras_.value(cid)) cam->setFps(fps);
+        if (auto cam = cameras_.value(cid)) cam->setFpsAsync(fps);
         saveSettings();
     });
     connect(widget, &CameraWidget::pixelFormatChanged, this, [this, cid](const QString& fmt) {
-        if (auto cam = cameras_.value(cid)) cam->setPixelFormat(fmt.toStdString());
+        // FOURCC change reopens the device on the capture thread.
+        if (auto cam = cameras_.value(cid)) cam->requestPixelFormat(fmt.toStdString());
         saveSettings();
     });
     connect(widget, &CameraWidget::dynamicFramerateToggled, this, [this](int) {

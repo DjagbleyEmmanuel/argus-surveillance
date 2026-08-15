@@ -141,6 +141,11 @@ void CameraSource::captureLoop() {
     int frames = 0;
 
     while (running_ && !stop_event_) {
+        // Apply any queued resolution/fps changes, and honor a pending
+        // pixel-format change (which reopens the device). Runs here on the
+        // capture thread so the GUI never blocks on V4L2 renegotiation.
+        applyPending();
+
         bool is_opened = false;
         {
             std::lock_guard<std::mutex> lock(cap_mutex_);
@@ -270,6 +275,62 @@ bool CameraSource::setPixelFormat(const std::string& pixel_format) {
     std::string code = fourccOf(pixel_format);
     if (code.size() != 4) return true;
     return cap_->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc(code[0], code[1], code[2], code[3]));
+}
+
+void CameraSource::setResolutionAsync(int width, int height) {
+    std::lock_guard<std::mutex> lk(cmd_mutex_);
+    cmd_queue_.push([this, width, height] {
+        cap_->set(cv::CAP_PROP_FRAME_WIDTH, width);
+        cap_->set(cv::CAP_PROP_FRAME_HEIGHT, height);
+        std::this_thread::sleep_for(50ms);
+        int rw = static_cast<int>(cap_->get(cv::CAP_PROP_FRAME_WIDTH));
+        int rh = static_cast<int>(cap_->get(cv::CAP_PROP_FRAME_HEIGHT));
+        if (rw > 0 && rh > 0) resolution_ = {rw, rh};
+    });
+}
+
+void CameraSource::setFpsAsync(double fps) {
+    std::lock_guard<std::mutex> lk(cmd_mutex_);
+    cmd_queue_.push([this, fps] {
+        cap_->set(cv::CAP_PROP_FPS, fps);
+    });
+}
+
+void CameraSource::requestPixelFormat(const std::string& pixel_format) {
+    pixel_format_ = pixel_format;
+    {
+        std::lock_guard<std::mutex> lk(cmd_mutex_);
+        need_reopen_ = true;  // honored by captureLoop() -> reconnect()
+    }
+}
+
+void CameraSource::applyPending() {
+    // Pixel-format change requires a full device reopen (FOURCC can't be
+    // changed on a live V4L2 handle). Do it here on the capture thread, with
+    // no locks held, so the GUI never blocks.
+    bool do_reopen = false;
+    {
+        std::lock_guard<std::mutex> lk(cmd_mutex_);
+        if (need_reopen_) {
+            do_reopen = true;
+            need_reopen_ = false;
+        }
+    }
+    if (do_reopen) {
+        reconnect();  // reopens cap_ (open() re-applies the new pixel_format_)
+    }
+
+    // Drain queued resolution/fps changes (executed under cap_mutex_).
+    std::queue<std::function<void()>> q;
+    {
+        std::lock_guard<std::mutex> lk(cmd_mutex_);
+        std::swap(q, cmd_queue_);
+    }
+    while (!q.empty()) {
+        std::lock_guard<std::mutex> lk(cap_mutex_);
+        q.front()();
+        q.pop();
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -48,16 +48,24 @@ public:
     // regression self-test (exercises zoom/night/wheel/fps on live camera cards)
     int selftestCanvas();
 
-protected:
+ signals:
+    // Emitted from the background open-thread so adding a camera never blocks
+    // the GUI. The slots run on the main thread (auto-queued).
+    void cameraOpened(QString cid, bool silent);
+    void cameraOpenFailed(QString cid, bool silent);
+
+ protected:
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
 
-private slots:
+ private slots:
     void onAddCamera();
     void onUsbScanFinished(std::vector<core::UsbCamera> cams);
     void pollCamera(const QString& cid);
     void onLightingChange(int value);
     void onLightModeChanged(int index);
+    void onCameraOpened(QString cid, bool silent);
+    void onCameraOpenFailed(QString cid, bool silent);
 
 private:
     void setupUi();
@@ -154,6 +162,10 @@ private:
     QMap<QString, CameraWidget*> widgets_;
     QMap<QString, DetachedCameraWindow*> detached_;
     QMap<QString, QTimer*> timers_;
+    // Cameras whose open() is still running on a background thread. Kept out of
+    // cameras_ until the device is actually online so the GUI never blocks.
+    QMap<QString, std::shared_ptr<core::CameraSource>> pending_cameras_;
+    QMap<QString, core::CameraConfig> pending_cfgs_;
 
     std::shared_ptr<core::ObjectDetector> object_detector_;
     std::shared_ptr<core::FaceRecognizer> face_recognizer_;
