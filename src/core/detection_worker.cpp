@@ -96,19 +96,27 @@ void DetectionWorker::mainLoop() {
         // (this is where most idle CPU goes). Cooldown keeps the gate open for
         // a few frames after each change so slow motion never blinks it.
         if (!frame.empty()) {
-            cv::Mat small;
-            cv::resize(frame, small, cv::Size(kGateRefWidth, 0), 0, 0,
-                       cv::INTER_NEAREST);
-            cv::cvtColor(small, small, cv::COLOR_BGR2GRAY);
-            bool changed = gate_prev.empty();
-            if (!changed && small.size() == gate_prev.size()) {
-                cv::Mat diff;
-                cv::absdiff(small, gate_prev, diff);
-                changed = cv::mean(diff)[0] > kGateDiffMean;
+            try {
+                const int gw = kGateRefWidth;
+                const int gh = std::max(
+                    1, static_cast<int>(static_cast<double>(frame.rows) * gw /
+                                        std::max(frame.cols, 1)));
+                cv::Mat small;
+                cv::resize(frame, small, cv::Size(gw, gh), 0, 0,
+                           cv::INTER_NEAREST);
+                cv::cvtColor(small, small, cv::COLOR_BGR2GRAY);
+                bool changed = gate_prev.empty();
+                if (!changed && small.size() == gate_prev.size()) {
+                    cv::Mat diff;
+                    cv::absdiff(small, gate_prev, diff);
+                    changed = cv::mean(diff)[0] > kGateDiffMean;
+                }
+                gate_prev = small;
+                if (changed) gate_active = kGateCooldownFrames;
+                else gate_active = std::max(0, gate_active - 1);
+            } catch (...) {
+                gate_active = kGateCooldownFrames;  // never gate off a bad frame
             }
-            gate_prev = small;
-            if (changed) gate_active = kGateCooldownFrames;
-            else gate_active = std::max(0, gate_active - 1);
         }
         const bool gate_on = gate_active > 0;
         if (gate_on && !prev_gate_on) {
