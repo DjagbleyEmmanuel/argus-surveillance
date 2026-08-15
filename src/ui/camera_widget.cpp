@@ -705,21 +705,22 @@ void CameraWidget::selectResolution(int width, int height) {
     res_combo_->blockSignals(false);
 }
 
-void CameraWidget::setPixelFormats(bool is_usb, const std::string& current) {
+void CameraWidget::setPixelFormats(const std::vector<std::string>& labels,
+                                   const std::string& current) {
     fmt_combo_->blockSignals(true);
     fmt_combo_->clear();
-    if (is_usb) {
-        for (const auto& [label, code] : core::PixelFormats()) {
-            fmt_combo_->addItem(QString::fromStdString(label),
-                                QString::fromStdString(code));
-            if (label == current) fmt_combo_->setCurrentText(QString::fromStdString(label));
-        }
+    const bool visible = !labels.empty();
+    if (visible) {
+        for (const auto& label : labels)
+            fmt_combo_->addItem(QString::fromStdString(label));
+        if (!current.empty())
+            fmt_combo_->setCurrentText(QString::fromStdString(current));
         if (fmt_combo_->currentText().isEmpty())
-            fmt_combo_->setCurrentText("Auto (Default)");
+            fmt_combo_->setCurrentText(QString::fromStdString(labels.front()));
     }
-    fmt_combo_->setEnabled(is_usb);
-    fmt_combo_->setVisible(is_usb);
-    fmt_label_->setVisible(is_usb);
+    fmt_combo_->setEnabled(visible);
+    fmt_combo_->setVisible(visible);
+    fmt_label_->setVisible(visible);
     fmt_combo_->blockSignals(false);
 }
 

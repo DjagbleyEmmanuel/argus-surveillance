@@ -48,7 +48,10 @@ public:
     void setResolutions(const std::vector<std::pair<int, int>>& sizes);
     std::pair<int, int> selectedResolution() const;
     void selectResolution(int width, int height);
-    void setPixelFormats(bool is_usb, const std::string& current);
+    // Labels of formats the device ACTUALLY supports; empty list hides the
+    // combo (non-USB sources). Only supported formats may be offered.
+    void setPixelFormats(const std::vector<std::string>& labels,
+                         const std::string& current);
     void setCurrentPixelFormat(const std::string& fmt);
     void setFps(int fps);
     int selectedFps() const;

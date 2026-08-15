@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QProcess>
+#include <QRegularExpression>
 
 #include <chrono>
 #include <algorithm>
@@ -24,6 +25,20 @@ static std::string fourccOf(const std::string& label) {
         if (lbl == label) return code;
     }
     return "";
+}
+
+static std::string labelForFourcc(const std::string& code) {
+    for (const auto& [label, c] : PixelFormats()) {
+        if (c == code) return label;
+    }
+    return code;
+}
+
+static std::string fourccString(int fourcc) {
+    std::string s(4, ' ');
+    for (int i = 0; i < 4; ++i)
+        s[i] = static_cast<char>((fourcc >> (8 * i)) & 0xFF);
+    return s;
 }
 
 static std::optional<CameraType> typeOf(const std::string& url) {
@@ -83,11 +98,7 @@ bool CameraSource::open() {
             return false;
         }
 
-        if (type_ == CameraType::USB && !pixel_format_.empty()) {
-            std::string code = fourccOf(pixel_format_);
-            if (code.size() == 4)
-                cap_->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc(code[0], code[1], code[2], code[3]));
-        }
+        applyPixelFormat();
 
         cv::Mat frame;
         if (!cap_->read(frame) || frame.empty()) {
@@ -126,12 +137,33 @@ bool CameraSource::reconnect() {
         }
         bool ok = cap_->isOpened();
         if (ok) {
+            // Re-apply the requested capture format (FOURCC) on reconnect.
+            // Without this, a live format change reopens the device at its
+            // default format and only takes effect after an app restart.
+            applyPixelFormat();
             status_ = CameraStatus::ONLINE;
             if (type_ == CameraType::USB) refreshDynamicFramerate(true);
         }
         return ok;
     } catch (...) {
         return false;
+    }
+}
+
+void CameraSource::applyPixelFormat() {
+    // Assumes cap_mutex_ is held and cap_ is a freshly opened device.
+    if (type_ != CameraType::USB || pixel_format_.empty()) return;
+    const std::string code = fourccOf(pixel_format_);
+    if (code.size() != 4) return;
+    const int want = cv::VideoWriter::fourcc(code[0], code[1], code[2], code[3]);
+    cap_->set(cv::CAP_PROP_FOURCC, want);
+    // The device may reject the format and fall back to its default. Reconcile
+    // so internal state and the UI reflect what is actually streaming.
+    const int actual = static_cast<int>(cap_->get(cv::CAP_PROP_FOURCC));
+    if (actual != want) {
+        const std::string actual_code = fourccString(actual);
+        if (!actual_code.empty() && actual_code != code)
+            pixel_format_ = labelForFourcc(actual_code);
     }
 }
 
@@ -411,6 +443,65 @@ std::vector<std::pair<int, int>> CameraSource::enumerateResolutions() const {
         sizes.insert(sizes.begin(), cur);
     }
     return sizes;
+}
+
+std::vector<CameraFormat> CameraSource::enumerateFormats(int index) {
+    std::vector<CameraFormat> result;
+    const QString dev = QString("/dev/video%1").arg(index);
+
+    std::vector<CameraFormat> formats;
+    {
+        QProcess proc;
+        proc.start("v4l2-ctl", {"-d", dev, "--list-formats-ext"});
+        if (!proc.waitForFinished(8000)) return result;
+        const QString out = QString::fromUtf8(proc.readAllStandardOutput());
+        static const QRegularExpression re(R"(\[\d+\]:\s*'([A-Za-z0-9]+)'\s*\()");
+        static const QRegularExpression re2(R"((\d+)x(\d+))");
+        for (const QString& line : out.split('\n')) {
+            const QString s = line.trimmed();
+            const auto m = re.match(s);
+            if (m.hasMatch()) {
+                const std::string code = m.captured(1).toStdString();
+                formats.push_back({labelForFourcc(code), code, {}});
+            } else if (s.startsWith("Size: Discrete") && !formats.empty()) {
+                const auto m2 = re2.match(s);
+                if (m2.hasMatch())
+                    formats.back().sizes.push_back(
+                        {m2.captured(1).toInt(), m2.captured(2).toInt()});
+            }
+        }
+    }
+    if (formats.empty()) return result;
+
+    // The device default format, so "Auto (Default)" shows valid sizes.
+    std::string default_fourcc;
+    {
+        QProcess gf;
+        gf.start("v4l2-ctl", {"-d", dev, "--get-fmt-video"});
+        if (gf.waitForFinished(5000)) {
+            const QString go = QString::fromUtf8(gf.readAllStandardOutput());
+            static const QRegularExpression re3(R"(Pixel Format\s*:\s*'([A-Za-z0-9]+)')");
+            const auto m3 = re3.match(go);
+            if (m3.hasMatch()) default_fourcc = m3.captured(1).toStdString();
+        }
+    }
+    std::vector<std::pair<int, int>> default_sizes;
+    for (const auto& f : formats)
+        if (f.fourcc == default_fourcc) { default_sizes = f.sizes; break; }
+    if (default_sizes.empty()) default_sizes = formats.front().sizes;
+
+    result.push_back({"Auto (Default)", "", std::move(default_sizes)});
+    result.insert(result.end(), formats.begin(), formats.end());
+    return result;
+}
+
+std::vector<CameraFormat> CameraSource::enumerateFormats() const {
+    if (type_ != CameraType::USB) return {};
+    try {
+        return enumerateFormats(std::stoi(source_url_));
+    } catch (...) {
+        return {};
+    }
 }
 
 // ---------------------------------------------------------------------------

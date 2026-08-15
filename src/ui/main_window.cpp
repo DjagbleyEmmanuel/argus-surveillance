@@ -782,7 +782,21 @@ void MainWindow::createWidget(const QString& cid, const core::CameraConfig& cfg)
     });
     connect(widget, &CameraWidget::pixelFormatChanged, this, [this, cid](const QString& fmt) {
         // FOURCC change reopens the device on the capture thread.
-        if (auto cam = cameras_.value(cid)) cam->requestPixelFormat(fmt.toStdString());
+        auto cam = cameras_.value(cid);
+        if (cam) cam->requestPixelFormat(fmt.toStdString());
+        // Repopulate the Res combo with the new format's valid sizes and
+        // renegotiate so the stream matches the selected format immediately.
+        auto w = widgets_.value(cid);
+        if (cam && w && cam->sourceType() == core::CameraType::USB) {
+            for (const auto& f : cam->enumerateFormats()) {
+                if (f.label == fmt.toStdString() && !f.sizes.empty()) {
+                    w->setResolutions(f.sizes);
+                    auto sz = w->selectedResolution();
+                    cam->setResolutionAsync(sz.first, sz.second);
+                    break;
+                }
+            }
+        }
         saveSettings();
     });
     connect(widget, &CameraWidget::dynamicFramerateToggled, this, [this](int) {
@@ -797,9 +811,22 @@ void MainWindow::createWidget(const QString& cid, const core::CameraConfig& cfg)
     widget->setLightMode(light_mode_combo_->currentData().toString().toStdString());
     if (auto worker = workers_.value(cid)) widget->setDetectionWorker(worker);
 
-    widget->setResolutions(camera->enumerateResolutions());
-    widget->setPixelFormats(camera->sourceType() == core::CameraType::USB,
-                            camera->pixelFormat());
+    std::vector<std::string> fmt_labels;
+    std::vector<std::pair<int, int>> res_sizes = camera->enumerateResolutions();
+    if (camera->sourceType() == core::CameraType::USB) {
+        const std::string cur_fmt = camera->pixelFormat();
+        auto fmts = camera->enumerateFormats();
+        for (const auto& f : fmts) fmt_labels.push_back(f.label);
+        for (const auto& f : fmts) {
+            if (f.sizes.empty()) continue;
+            if (cur_fmt.empty() || f.label == cur_fmt) {
+                res_sizes = f.sizes;
+                break;
+            }
+        }
+    }
+    widget->setResolutions(res_sizes);
+    widget->setPixelFormats(fmt_labels, camera->pixelFormat());
 
     // restore saved per-camera resolution / fps
     if (cfg.resolution_w > 0 && cfg.resolution_h > 0)

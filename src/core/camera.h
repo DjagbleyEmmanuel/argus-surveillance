@@ -35,6 +35,14 @@ inline const std::vector<std::pair<std::string, std::string>>& PixelFormats() {
     return fmts;
 }
 
+// A capture output format a USB camera ACTUALLY supports (from
+// v4l2-ctl --list-formats-ext), with its valid frame sizes.
+struct CameraFormat {
+    std::string label;                       // UI label
+    std::string fourcc;                      // V4L2 FOURCC code ("" for Auto)
+    std::vector<std::pair<int, int>> sizes;  // supported frame sizes
+};
+
 // Stable per-physical-device identity (survives /dev/videoN index changes).
 struct UsbIdentity {
     int index = -1;
@@ -89,6 +97,12 @@ public:
     // Candidate resolutions for the widget's Res combo (current first).
     std::vector<std::pair<int, int>> enumerateResolutions() const;
 
+    // Formats the device ACTUALLY supports (label + fourcc + valid sizes),
+    // queried from v4l2-ctl --list-formats-ext. The UI must only offer these —
+    // the device silently falls back to its default for unsupported FOURCCs.
+    static std::vector<CameraFormat> enumerateFormats(int index);
+    std::vector<CameraFormat> enumerateFormats() const;  // uses this device
+
     // ---- introspection ----
     bool isOnline() const;   // ONLINE and frame received < 5s ago
     CameraStatus status() const { return status_.load(); }
@@ -136,6 +150,7 @@ public:
 private:
     void captureLoop();
     bool reconnect();
+    void applyPixelFormat();  // applies pixel_format_ + verifies; cap_mutex_ held
 
     std::string name_;
     CameraType type_;
