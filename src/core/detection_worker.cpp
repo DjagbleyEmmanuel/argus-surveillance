@@ -64,12 +64,18 @@ void DetectionWorker::mainLoop() {
     fps_time_ = std::chrono::duration<double>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
 
+    // scene-change gate state (main-loop thread only)
+    cv::Mat gate_prev;
+    int gate_active = kGateCooldownFrames;  // run detectors from startup
+    bool prev_gate_on = true;
+
     while (running_ && !stop_event_) {
         cv::Mat frame;
         if (!camera_->readLatest(frame)) {
             std::this_thread::sleep_for(5ms);
             continue;
         }
+        auto t0 = std::chrono::steady_clock::now();
 
         frame_count++;
         frame_count_++;
@@ -80,7 +86,38 @@ void DetectionWorker::mainLoop() {
             current_fps_ = frame_count_ / (now - fps_time_);
             frame_count_ = 0;
             fps_time_ = now;
+            dropped_last_sec_ = static_cast<int>(camera_->frameDrops());
+            camera_->resetFrameDrops();
         }
+
+        // ---- scene-change gate -------------------------------------------
+        // Cheap downscaled consecutive-frame diff. A static scene means there
+        // is nothing new to detect, so the expensive detectors are skipped
+        // (this is where most idle CPU goes). Cooldown keeps the gate open for
+        // a few frames after each change so slow motion never blinks it.
+        if (!frame.empty()) {
+            cv::Mat small;
+            cv::resize(frame, small, cv::Size(kGateRefWidth, 0), 0, 0,
+                       cv::INTER_NEAREST);
+            cv::cvtColor(small, small, cv::COLOR_BGR2GRAY);
+            bool changed = gate_prev.empty();
+            if (!changed && small.size() == gate_prev.size()) {
+                cv::Mat diff;
+                cv::absdiff(small, gate_prev, diff);
+                changed = cv::mean(diff)[0] > kGateDiffMean;
+            }
+            gate_prev = small;
+            if (changed) gate_active = kGateCooldownFrames;
+            else gate_active = std::max(0, gate_active - 1);
+        }
+        const bool gate_on = gate_active > 0;
+        if (gate_on && !prev_gate_on) {
+            // Scene just became active: run heavy detection immediately.
+            hog_skip_ = kHogInterval;
+            yolo_skip_ = kYoloInterval;
+            face_skip_ = kFaceInterval;
+        }
+        prev_gate_on = gate_on;
 
         std::vector<DetectedObject> motion_boxes;
         std::vector<Problem> problems;
@@ -94,51 +131,67 @@ void DetectionWorker::mainLoop() {
         // HOG human feed (async side thread)
         std::vector<DetectedObject> human_boxes;
         if (human_enabled_) {
-            hog_skip_++;
-            if (hog_skip_ >= kHogInterval) {
-                hog_skip_ = 0;
+            if (gate_on) {
+                hog_skip_++;
+                if (hog_skip_ >= kHogInterval) {
+                    hog_skip_ = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(hog_lock_);
+                        hog_frame_ = frame;
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(hog_lock_);
-                    hog_frame_ = frame;
+                    human_boxes = human_boxes_;
                 }
-            }
-            {
+            } else {
+                // static scene: drop stale overlays, stop submitting
                 std::lock_guard<std::mutex> lock(hog_lock_);
-                human_boxes = human_boxes_;
+                human_boxes_.clear();
             }
         }
 
         // YOLO object feed (async side thread)
         std::vector<DetectedObject> object_boxes;
         if (object_enabled_ && object_detector_ && object_detector_->isEnabled()) {
-            yolo_skip_++;
-            if (yolo_skip_ >= kYoloInterval) {
-                yolo_skip_ = 0;
+            if (gate_on) {
+                yolo_skip_++;
+                if (yolo_skip_ >= kYoloInterval) {
+                    yolo_skip_ = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(yolo_lock_);
+                        yolo_frame_ = frame;
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(yolo_lock_);
-                    yolo_frame_ = frame;
+                    object_boxes = object_boxes_;
                 }
-            }
-            {
+            } else {
                 std::lock_guard<std::mutex> lock(yolo_lock_);
-                object_boxes = object_boxes_;
+                object_boxes_.clear();
             }
         }
 
         // face feed (async side thread)
         std::vector<DetectedObject> face_boxes;
         if (face_enabled_ && face_recognizer_) {
-            face_skip_++;
-            if (face_skip_ >= kFaceInterval) {
-                face_skip_ = 0;
+            if (gate_on) {
+                face_skip_++;
+                if (face_skip_ >= kFaceInterval) {
+                    face_skip_ = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(face_lock_);
+                        face_frame_ = frame;
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lock(face_lock_);
-                    face_frame_ = frame;
+                    face_boxes = face_boxes_;
                 }
-            }
-            {
+            } else {
                 std::lock_guard<std::mutex> lock(face_lock_);
-                face_boxes = face_boxes_;
+                face_boxes_.clear();
             }
         }
 
@@ -171,6 +224,10 @@ void DetectionWorker::mainLoop() {
         result.paused = is_paused;
         result.frame_count = frame_count;
         result.timestamp = now;
+        result.process_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count();
+        result.dropped_frames = dropped_last_sec_;
+        result.gate_idle = !gate_on;
 
         {
             std::lock_guard<std::mutex> lock(result_mutex_);

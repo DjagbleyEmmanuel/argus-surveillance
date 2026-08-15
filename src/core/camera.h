@@ -110,6 +110,9 @@ public:
     double fps() const { return fps_.load(); }
     std::pair<int, int> resolution() const { return resolution_; }
     double uptime() const;
+    // Frames dropped by the bounded capture ring (consumer couldn't keep up).
+    long frameDrops() const { return frame_drops_.load(); }
+    void resetFrameDrops() { frame_drops_.store(0); }
 
     // ---- accessors ----
     const std::string& name() const { return name_; }
@@ -179,6 +182,7 @@ private:
     std::atomic<double> fps_{0.0};
     std::pair<int, int> resolution_{0, 0};
     std::atomic<double> last_frame_time_{0.0};
+    std::atomic<long> frame_drops_{0};
     double reconnect_delay_ = 2.0;
 
     std::atomic<bool> running_{false};

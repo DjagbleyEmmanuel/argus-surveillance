@@ -31,6 +31,10 @@ struct DetectionResult {
     bool paused = false;
     int frame_count = 0;
     double timestamp = 0.0;
+    // ---- perf metrics (for the per-tile footer) ----
+    double process_ms = 0.0;   // main-loop time to build this result
+    int dropped_frames = 0;    // frames dropped by the camera ring last second
+    bool gate_idle = false;    // scene-change gate: heavy detectors suppressed
 };
 
 // Per-camera pipeline. Threads mirror Python detection_worker.py:
@@ -143,6 +147,13 @@ private:
 
     int frame_count_ = 0;
     double fps_time_ = 0.0, current_fps_ = 0.0;
+    int dropped_last_sec_ = 0;  // per-second, refreshed with the FPS window
+
+    // Scene-change gate: a cheap consecutive-frame diff decides whether the
+    // expensive detectors (HOG/YOLO/face) even run. A static scene skips them.
+    static constexpr double kGateDiffMean = 3.0;
+    static constexpr int kGateCooldownFrames = 8;
+    static constexpr int kGateRefWidth = 160;
 };
 
 }  // namespace core

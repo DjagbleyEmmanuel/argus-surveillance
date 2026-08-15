@@ -574,6 +574,9 @@ void CameraWidget::buildFooter() {
     footer_fps_ = new QLabel("0.0 FPS");
     footer_fps_->setObjectName("camFooterFps");
     footer_fps_->setStyleSheet("color: #4ade80; font-size: 11px; font-weight: 700; background: transparent;");
+    perf_label_ = new QLabel("");
+    perf_label_->setObjectName("camFooterPerf");
+    perf_label_->setStyleSheet("color: #94a3b8; font-size: 10px; font-weight: 700; background: transparent;");
     auto* info = new QLabel("");
     info->setObjectName("camFooterInfo");
     info->setStyleSheet("color: #fbbf24; font-size: 10px; font-weight: 700; background: transparent;");
@@ -582,6 +585,7 @@ void CameraWidget::buildFooter() {
     res->setStyleSheet("color: #64748b; font-size: 10px; background: transparent;");
 
     ftr->addWidget(footer_fps_);
+    ftr->addWidget(perf_label_);
     ftr->addStretch();
     ftr->addWidget(info);
     ftr->addStretch();
@@ -641,7 +645,18 @@ void CameraWidget::resizeEvent(QResizeEvent* event) {
 void CameraWidget::updateFrame(core::DetectionResult result) {
     if (footer_fps_)
         footer_fps_->setText(QString("%1 FPS").arg(result.fps, 0, 'f', 1));
-    recording_ = result.recording;
+    if (perf_label_) {
+        QString t;
+        t += QString("%1ms").arg(result.process_ms, 0, 'f', 1);
+        if (result.dropped_frames > 0)
+            t += QString(" · %1drp").arg(result.dropped_frames);
+        if (result.gate_idle) t += " · idle";
+        perf_label_->setText(t);
+        perf_label_->setStyleSheet(
+            result.dropped_frames > 0
+                ? "color: #f87171; font-size: 10px; font-weight: 700; background: transparent;"
+                : "color: #94a3b8; font-size: 10px; font-weight: 700; background: transparent;");
+    }
     canvas_->updateFrame(std::move(result));
     setRecordingState(recording_);
 }

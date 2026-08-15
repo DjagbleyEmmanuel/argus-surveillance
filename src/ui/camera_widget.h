@@ -104,6 +104,7 @@ private:
     QComboBox* fmt_combo_ = nullptr;
     QLabel* fmt_label_ = nullptr;
     QLabel* footer_fps_ = nullptr;
+    QLabel* perf_label_ = nullptr;
 
     // exposure_dynamic_framerate toggle state
     bool edf_supported_ = false;

@@ -240,7 +240,10 @@ void CameraSource::captureLoop() {
 
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
-            if (frame_queue_.size() >= 2) frame_queue_.pop_front();
+            if (frame_queue_.size() >= 2) {
+                frame_queue_.pop_front();
+                frame_drops_++;  // bounded drop-oldest: consumer is behind
+            }
             frame_queue_.push_back(frame);
         }
         queue_cv_.notify_all();
